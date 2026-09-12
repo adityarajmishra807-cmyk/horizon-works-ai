@@ -1,62 +1,110 @@
 import React from 'react';
-import { BrainCircuit, Check, Database, Loader2, Sparkles, ArrowUpRight, FolderKanban, ListTodo, UsersRound, StickyNote, Wrench, Activity, Trash2, Zap, Bot } from 'lucide-react';
-import { getOrganizedRecords, subscribeToOrganizationChanges, type OrganizationAction } from './horizon-organization';
-import { getMemories, subscribeToMemoryChanges, type HorizonMemory } from './horizon-memory';
+import { ArrowUp, BrainCircuit, Loader2, Sparkles } from 'lucide-react';
+import { getOrganizedRecords, type OrganizationAction } from './horizon-organization';
+import { getMemories, type HorizonMemory } from './horizon-memory';
 import { type HorizonToolCall } from './horizon-tools';
-import { clearAudit, getAuditEntries, hydrateAudit, recordAudit, subscribeToAuditChanges, type HorizonAuditEntry } from './horizon-audit';
-import { getProactiveInsights, type HorizonInsight } from './horizon-proactive';
-import { HORIZON_AGENTS, routeHorizonAgent, executeAgentTools, buildAgentInstruction } from './horizon-agents';
+import { hydrateAudit, recordAudit } from './horizon-audit';
+import { buildAgentInstruction, executeAgentTools, routeHorizonAgent } from './horizon-agents';
 
 type Prospect = { id: string; name: string; handle: string; niche: string; score: number | null; status: string; reply: string; time: string };
-type HorizonResponse = { ok: boolean; text?: string; error?: string; organization?: { actions?: OrganizationAction[]; memories?: Array<Omit<HorizonMemory, 'id' | 'createdAt' | 'updatedAt'>>; followUps?: string[] } };
-const EXAMPLES = [
-  'I spoke to Rahul today. He wants a restaurant website for around 60k and wants it before October 15. I need to send the proposal tomorrow.',
-  'Organize this: our strongest outreach opportunity today is a luxury travel business that replied and asked to see the demo.',
-  'What should I focus on today based on the outreach pipeline?',
-];
-
-function OrganizationSummary({ refresh }: { refresh: number }) {
-  const records = React.useMemo(() => getOrganizedRecords(), [refresh]);
-  const memories = React.useMemo(() => getMemories(), [refresh]);
-  const counts = { client: records.filter((r) => r.type === 'client').length, project: records.filter((r) => r.type === 'project').length, task: records.filter((r) => r.type === 'task').length, note: records.filter((r) => r.type === 'note').length };
-  return <div className="horizon-organization-summary"><div className="horizon-org-stat"><UsersRound size={14} /><strong>{counts.client}</strong><span>clients</span></div><div className="horizon-org-stat"><FolderKanban size={14} /><strong>{counts.project}</strong><span>projects</span></div><div className="horizon-org-stat"><ListTodo size={14} /><strong>{counts.task}</strong><span>tasks</span></div><div className="horizon-org-stat"><StickyNote size={14} /><strong>{counts.note + memories.length}</strong><span>notes + memories</span></div></div>;
-}
-
-function ActivityAudit({ refresh }: { refresh: number }) {
-  const entries = React.useMemo(() => getAuditEntries({ limit: 12 }), [refresh]);
-  return <div className="horizon-audit-card"><div className="horizon-audit-head"><div><p className="section-kicker">Activity / audit</p><h3>What Horizon did</h3></div><button className="horizon-audit-clear" onClick={clearAudit} title="Clear persistent audit history"><Trash2 size={14} /></button></div>{entries.length === 0 ? <div className="horizon-audit-empty"><Activity size={16} /><span>Tool calls and organization events will appear here.</span></div> : <div className="horizon-audit-list">{entries.map((entry: HorizonAuditEntry) => <div className="horizon-audit-item" key={entry.id}><span className={`horizon-audit-dot ${entry.metadata?.ok === false ? 'error' : ''}`} /><div><strong>{entry.action.replaceAll('_', ' ')}</strong><span>{entry.summary}</span></div><time>{new Date(entry.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time></div>)}</div>}</div>;
-}
-
-function ProactivePanel({ prospects, refresh }: { prospects: Prospect[]; refresh: number }) {
-  const insights = React.useMemo(() => getProactiveInsights(prospects), [prospects, refresh]);
-  return <div className="panel horizon-proactive-card"><div className="horizon-audit-head"><div><p className="section-kicker">Proactive intelligence</p><h3>What needs attention</h3></div><Zap size={15} /></div>{insights.length === 0 ? <div className="horizon-audit-empty"><Zap size={16} /><span>No high-signal actions detected right now.</span></div> : insights.map((insight: HorizonInsight) => <div className="horizon-insight" key={insight.id}><span className={`horizon-insight-priority ${insight.priority}`} /><div><strong>{insight.title}</strong><span>{insight.detail}</span><em>{insight.action}</em></div></div>)}</div>;
-}
-
-function AgentPanel({ activeAgent }: { activeAgent: string }) {
-  return <div className="panel horizon-agent-card"><div className="horizon-audit-head"><div><p className="section-kicker">Specialized agents</p><h3>Role-based reasoning</h3></div><Bot size={15} /></div><div className="horizon-agent-list">{HORIZON_AGENTS.map((agent) => <div className={`horizon-agent ${agent.id === activeAgent ? 'active' : ''}`} key={agent.id}><span>{agent.name}</span><small>{agent.description}</small><em>{agent.tools.length} controlled tools</em></div>)}</div></div>;
-}
+type HorizonResponse = { ok: boolean; text?: string; error?: string; organization?: { actions?: OrganizationAction[]; memories?: Array<Omit<HorizonMemory, 'id' | 'createdAt' | 'updatedAt'>> } };
+type Message = { role: 'user' | 'assistant'; text: string };
 
 export function HorizonAI({ prospects }: { prospects: Prospect[] }) {
   const [input, setInput] = React.useState('');
-  const [messages, setMessages] = React.useState<Array<{ role: 'user' | 'assistant'; text: string }>>([]);
+  const [messages, setMessages] = React.useState<Message[]>([]);
   const [loading, setLoading] = React.useState(false);
   const [notice, setNotice] = React.useState('');
-  const [organizationTick, setOrganizationTick] = React.useState(0);
-  const [activeAgent, setActiveAgent] = React.useState('planner');
-  const [lastOrganization, setLastOrganization] = React.useState<{ created: number; updated: number; memories: number; tools: number } | null>(null);
-  React.useEffect(() => { const refresh = () => setOrganizationTick((v) => v + 1); const a = subscribeToOrganizationChanges(refresh); const b = subscribeToMemoryChanges(refresh); const c = subscribeToAuditChanges(refresh); void hydrateAudit().then(() => setOrganizationTick((v) => v + 1)); return () => { a(); b(); c(); }; }, []);
+  const [agentName, setAgentName] = React.useState('Horizon');
+  const [savedNotice, setSavedNotice] = React.useState('');
 
-  async function sendMessage(message = input) {
-    const text = message.trim(); if (!text || loading) return; setInput(''); setNotice(''); setMessages((current) => [...current, { role: 'user', text }]); setLoading(true);
-    const agent = routeHorizonAgent(text); setActiveAgent(agent.id); recordAudit({ kind: 'ai_request', action: 'ai_request', summary: `${agent.name} started processing a request.`, metadata: { length: text.length, agent: agent.id } });
+  React.useEffect(() => { void hydrateAudit(); }, []);
+
+  async function sendMessage() {
+    const text = input.trim();
+    if (!text || loading) return;
+    setInput('');
+    setNotice('');
+    setSavedNotice('');
+    setMessages((current) => [...current, { role: 'user', text }]);
+    setLoading(true);
+
+    const agent = routeHorizonAgent(text);
+    setAgentName(agent.name);
+    recordAudit({ kind: 'ai_request', action: 'ai_request', summary: `${agent.name} started processing a request.`, metadata: { length: text.length, agent: agent.id } });
+
     try {
-      const response = await fetch('/api/ai', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: buildAgentInstruction(agent, text), context: { workspace: 'Horizon Works Outreach', prospects: prospects.map(({ id, ...p }) => p), counts: { prospects: prospects.length, sent: prospects.filter((p) => ['Sent', 'Replied', 'Interested', 'Not interested'].includes(p.status)).length, replies: prospects.filter((p) => ['Replied', 'Interested', 'Not interested'].includes(p.status)).length, interested: prospects.filter((p) => p.status === 'Interested').length }, organizedRecords: getOrganizedRecords().slice(0, 40), memories: getMemories().slice(0, 40), agent: { id: agent.id, name: agent.name, tools: agent.tools } } }) });
-      const data = (await response.json()) as HorizonResponse; if (!response.ok || !data.ok) throw new Error(data.error || 'Horizon could not process that request.');
-      const organization = data.organization; const toolCalls: HorizonToolCall[] = []; if (organization?.actions?.length) toolCalls.push({ name: 'organize_records', arguments: { actions: organization.actions } }); for (const memory of organization?.memories || []) if (memory.content?.trim()) toolCalls.push({ name: 'save_memory', arguments: memory });
-      const toolResults = executeAgentTools(agent, toolCalls); const created = toolResults.reduce((sum, result) => sum + (result.data && typeof result.data === 'object' && 'created' in result.data ? Number((result.data as { created?: number }).created || 0) : 0), 0); const updated = toolResults.reduce((sum, result) => sum + (result.data && typeof result.data === 'object' && 'updated' in result.data ? Number((result.data as { updated?: number }).updated || 0) : 0), 0); const memoryCount = toolCalls.filter((call) => call.name === 'save_memory').length;
-      setLastOrganization({ created, updated, memories: memoryCount, tools: toolCalls.length }); setOrganizationTick((v) => v + 1); const suffix = created || updated || memoryCount ? `\n\nOrganized: ${created} new, ${updated} updated${memoryCount ? `, ${memoryCount} memor${memoryCount === 1 ? 'y' : 'ies'} stored` : ''}.` : ''; setMessages((current) => [...current, { role: 'assistant', text: `${data.text || 'Done.'}${suffix}` }]); recordAudit({ kind: 'ai_request', action: 'ai_request_completed', summary: `${agent.name} completed the request.`, metadata: { tools: toolCalls.length, created, updated, memories: memoryCount, agent: agent.id } });
-    } catch (error) { recordAudit({ kind: 'error', action: 'ai_request', summary: error instanceof Error ? error.message : 'Horizon request failed.', metadata: { ok: false, agent: agent.id } }); setNotice(error instanceof Error ? error.message : 'Horizon AI is unavailable right now.'); } finally { setLoading(false); }
+      const response = await fetch('/api/ai', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          message: buildAgentInstruction(agent, text),
+          context: {
+            workspace: 'Horizon Works',
+            prospects: prospects.map(({ id: _id, ...prospect }) => prospect),
+            counts: {
+              prospects: prospects.length,
+              sent: prospects.filter((prospect) => ['Sent', 'Replied', 'Interested', 'Not interested'].includes(prospect.status)).length,
+              replies: prospects.filter((prospect) => ['Replied', 'Interested', 'Not interested'].includes(prospect.status)).length,
+              interested: prospects.filter((prospect) => prospect.status === 'Interested').length,
+            },
+            organizedRecords: getOrganizedRecords().slice(0, 40),
+            memories: getMemories().slice(0, 40),
+            agent: { id: agent.id, name: agent.name, tools: agent.tools },
+          },
+        }),
+      });
+
+      const data = (await response.json()) as HorizonResponse;
+      if (!response.ok || !data.ok) throw new Error(data.error || 'Horizon could not process that request.');
+
+      const organization = data.organization;
+      const toolCalls: HorizonToolCall[] = [];
+      if (organization?.actions?.length) toolCalls.push({ name: 'organize_records', arguments: { actions: organization.actions } });
+      for (const memory of organization?.memories || []) if (memory.content?.trim()) toolCalls.push({ name: 'save_memory', arguments: memory });
+
+      const toolResults = executeAgentTools(agent, toolCalls);
+      const created = toolResults.reduce((sum, result) => sum + (result.data && typeof result.data === 'object' && 'created' in result.data ? Number((result.data as { created?: number }).created || 0) : 0), 0);
+      const updated = toolResults.reduce((sum, result) => sum + (result.data && typeof result.data === 'object' && 'updated' in result.data ? Number((result.data as { updated?: number }).updated || 0) : 0), 0);
+      const memoryCount = toolCalls.filter((call) => call.name === 'save_memory').length;
+      const details = created || updated || memoryCount ? ` Saved ${memoryCount ? `${memoryCount} memor${memoryCount === 1 ? 'y' : 'ies'}` : 'workspace context'}${created || updated ? ` · ${created} created · ${updated} updated` : ''}.` : '';
+
+      setMessages((current) => [...current, { role: 'assistant', text: `${data.text || 'Done.'}${details}` }]);
+      if (created || updated || memoryCount) setSavedNotice('Workspace updated');
+      recordAudit({ kind: 'ai_request', action: 'ai_request_completed', summary: `${agent.name} completed the request.`, metadata: { tools: toolCalls.length, created, updated, memories: memoryCount, agent: agent.id } });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Horizon AI is unavailable right now.';
+      setNotice(message);
+      recordAudit({ kind: 'error', action: 'ai_request', summary: message, metadata: { ok: false, agent: agent.id } });
+    } finally {
+      setLoading(false);
+    }
   }
 
-  return <section className="horizon-ai-page"><div className="horizon-ai-intro"><div><p className="eyebrow">HORIZON WORKS / AI OPERATING LAYER</p><div className="horizon-title-row"><div className="horizon-logo"><BrainCircuit size={22} /></div><div><h2>Horizon AI</h2><p>Tell Horizon anything. It interprets the information, organizes it into durable records, and keeps important context available for future work.</p></div></div></div><div className="horizon-status"><span /> Gemini backbone</div></div><ProactivePanel prospects={prospects} refresh={organizationTick} /><div className="horizon-grid"><div className="panel horizon-chat-panel"><div className="panel-head"><div><p className="section-kicker">Command center</p><h3>Talk naturally</h3></div><span className="horizon-live"><span /> {HORIZON_AGENTS.find((agent) => agent.id === activeAgent)?.name || 'Planner'}</span></div><div className="horizon-examples">{EXAMPLES.map((example) => <button key={example} onClick={() => sendMessage(example)}>{example}</button>)}</div><div className="horizon-messages" aria-live="polite">{messages.length === 0 ? <div className="horizon-empty-chat"><Sparkles size={20} /><strong>Start with a thought, update, plan, or question.</strong><span>Horizon will classify durable information and automatically turn it into workspace records.</span></div> : messages.map((message, index) => <div className={`horizon-message ${message.role}`} key={`${message.role}-${index}`}><div className="horizon-message-label">{message.role === 'user' ? 'YOU' : 'HORIZON'}</div><div className="horizon-message-text">{message.text}</div></div>)}{loading && <div className="horizon-message assistant"><div className="horizon-message-label">HORIZON</div><div className="horizon-loading"><Loader2 size={15} className="spin" /> Thinking and organizing…</div></div>}</div>{notice && <div className="horizon-notice"><span>{notice}</span><button onClick={() => setNotice('')}>Dismiss</button></div>}<form className="horizon-composer" onSubmit={(event) => { event.preventDefault(); void sendMessage(); }}><textarea value={input} onChange={(event) => setInput(event.target.value)} rows={5} placeholder="Tell Horizon anything… e.g. a client update, an idea, a deadline, a task, or a question." /><div className="horizon-composer-foot"><span>Private server-side Gemini request</span><button className="primary-btn" type="submit" disabled={loading || !input.trim()}>{loading ? 'Working…' : 'Send to Horizon'} <ArrowUpRight size={14} /></button></div></form></div><div className="horizon-side-stack"><AgentPanel activeAgent={activeAgent} /><div className="panel"><div className="panel-head"><div><p className="section-kicker">Automatic organization</p><h3>Workspace records</h3></div></div><OrganizationSummary refresh={organizationTick} /><div className="horizon-context-row"><Database size={15} /><div><strong>{getOrganizedRecords().length}</strong><span>structured records</span></div><Check size={14} /></div><div className="horizon-context-row"><BrainCircuit size={15} /><div><strong>{getMemories().length}</strong><span>durable memories</span></div><Check size={14} /></div><div className="horizon-context-row"><Wrench size={15} /><div><strong>{HORIZON_AGENTS.reduce((sum, agent) => sum + agent.tools.length, 0)}</strong><span>agent tool permissions</span></div><Check size={14} /></div>{lastOrganization && <div className="horizon-org-result">Last run: {lastOrganization.created} created · {lastOrganization.updated} updated · {lastOrganization.memories} memories · {lastOrganization.tools} tools</div>}</div><div className="panel horizon-memory-card"><p className="section-kicker">Specialized agents</p><h3>Controlled delegation</h3><p>Horizon routes requests to a focused role and restricts that role to its approved tool set. Workspace mutations still pass through the existing tool policy.</p><div className="memory-line"><span>Planner</span><i /></div><div className="memory-line"><span>Outreach strategist</span><i /></div><div className="memory-line"><span>Researcher</span><i /></div><div className="memory-line"><span>Operator</span><i /></div></div><div className="panel"><ActivityAudit refresh={organizationTick} /></div></div></div></section>;
+  return <section className="horizon-ai-page" aria-label="Horizon AI">
+    <header className="horizon-header">
+      <div className="horizon-brand">
+        <div className="horizon-brand-mark"><BrainCircuit size={17} /></div>
+        <div><div className="horizon-brand-name">Horizon AI</div><div className="horizon-brand-state"><span /> Gemini connected</div></div>
+      </div>
+      <div className="horizon-agent-state">{agentName}</div>
+    </header>
+
+    <main className="horizon-chat">
+      {messages.length === 0 ? <div className="horizon-empty"><div className="horizon-empty-icon"><Sparkles size={17} /></div><h1>What are we working on?</h1><p>Tell me what happened, what you need, or what you want to plan.</p></div> : <div className="horizon-messages" aria-live="polite">
+        {messages.map((message, index) => <article className={`horizon-message ${message.role}`} key={`${message.role}-${index}`}><div className="horizon-message-role">{message.role === 'user' ? 'You' : 'Horizon'}</div><div className="horizon-message-text">{message.text}</div></article>)}
+        {loading && <article className="horizon-message assistant"><div className="horizon-message-role">Horizon</div><div className="horizon-thinking"><Loader2 size={15} className="spin" /> Thinking…</div></article>}
+      </div>}
+    </main>
+
+    <footer className="horizon-compose-wrap">
+      {notice && <div className="horizon-error">{notice}</div>}
+      {savedNotice && <div className="horizon-saved">{savedNotice}</div>}
+      <form className="horizon-composer" onSubmit={(event) => { event.preventDefault(); void sendMessage(); }}>
+        <textarea value={input} onChange={(event) => setInput(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void sendMessage(); } }} placeholder="Message Horizon…" rows={1} aria-label="Message Horizon AI" />
+        <button type="submit" disabled={loading || !input.trim()} aria-label="Send message">{loading ? <Loader2 size={17} className="spin" /> : <ArrowUp size={17} />}</button>
+      </form>
+      <div className="horizon-compose-note">Horizon remembers important context and organizes work automatically.</div>
+    </footer>
+  </section>;
 }
