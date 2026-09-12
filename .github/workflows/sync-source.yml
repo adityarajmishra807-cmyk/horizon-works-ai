@@ -24,7 +24,7 @@ jobs:
           git clone --depth 1 https://github.com/adityarajmishra807-cmyk/hw-outreach-panel1.git /tmp/horizon-source
           find . -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
           cp -a /tmp/horizon-source/. .
-          rm -rf .git
+          rm -rf .git .github
           git init
           git remote add origin "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
           git fetch origin main
